@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">音频播放器</string>
+    <string name="play">播放</string>
+    <string name="pause">暂停</string>
+    <string name="stop">停止</string>
+    <string name="no_audio_files">未找到音频文件</string>
+    <string name="permission_denied">需要存储权限才能读取音频文件</string>
+    <string name="grant_permission">授予权限</string>
+    <string name="now_playing">正在播放</string>
+    <string name="auto_play_next">自动播放下一首</string>
+</resources>
