@@ -6,9 +6,13 @@ import android.media.MediaPlayer
 import android.os.Build
 import android.os.Bundle
 import android.os.Environment
+import android.view.Menu
+import android.view.MenuItem
 import android.widget.Button
+import android.widget.EditText
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -21,7 +25,9 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val PERMISSION_REQUEST_CODE = 100
-        private const val TARGET_DIRECTORY = "DCIM"
+        private const val DEFAULT_DIRECTORY = "DCIM"
+        private const val PREFS_NAME = "AudioPlayerPrefs"
+        private const val PREF_DIRECTORY = "target_directory"
     }
 
     private lateinit var recyclerView: RecyclerView
@@ -30,11 +36,13 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnPlayPause: Button
     private lateinit var nowPlayingBar: android.view.View
 
-    private var audioFiles: List<AudioFile> = emptyList()
-    private var adapter: AudioFileAdapter? = null
+    private var currentItems: List<FileItem> = emptyList()
+    private var adapter: FileAdapter? = null
     private var mediaPlayer: MediaPlayer? = null
+    private var currentAudioList: List<FileItem.Audio> = emptyList()
     private var currentIndex: Int = -1
     private var isPlaying: Boolean = false
+    private var currentDirectory: File? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +74,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menu.add(0, 1, 0, "设置目录")
+        return true
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        return when (item.itemId) {
+            1 -> {
+                showDirectorySettingsDialog()
+                true
+            }
+            else -> super.onOptionsItemSelected(item)
+        }
+    }
+
+    private fun showDirectorySettingsDialog() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val currentDir = prefs.getString(PREF_DIRECTORY, DEFAULT_DIRECTORY)
+
+        val editText = EditText(this).apply {
+            setText(currentDir)
+            hint = "输入目录名，如：DCIM"
+        }
+
+        AlertDialog.Builder(this)
+            .setTitle("设置扫描目录")
+            .setMessage("输入要扫描的目录名称（位于存储根目录下）")
+            .setView(editText)
+            .setPositiveButton("确定") { _, _ ->
+                val newDir = editText.text.toString().trim()
+                if (newDir.isNotEmpty()) {
+                    prefs.edit().putString(PREF_DIRECTORY, newDir).apply()
+                    loadFilesFromDirectory()
+                    Toast.makeText(this, "已切换到: $newDir", Toast.LENGTH_SHORT).show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
     private fun checkPermissionAndLoad() {
         val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             Manifest.permission.READ_MEDIA_AUDIO
@@ -74,7 +122,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (ContextCompat.checkSelfPermission(this, permission) == PackageManager.PERMISSION_GRANTED) {
-            loadAudioFiles()
+            loadFilesFromDirectory()
         } else {
             ActivityCompat.requestPermissions(this, arrayOf(permission), PERMISSION_REQUEST_CODE)
         }
@@ -88,7 +136,7 @@ class MainActivity : AppCompatActivity() {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-                loadAudioFiles()
+                loadFilesFromDirectory()
             } else {
                 Toast.makeText(this, R.string.permission_denied, Toast.LENGTH_LONG).show()
                 tvEmpty.text = getString(R.string.permission_denied)
@@ -97,37 +145,78 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun loadAudioFiles() {
-        val dcimDir = File(Environment.getExternalStorageDirectory(), TARGET_DIRECTORY)
+    private fun loadFilesFromDirectory() {
+        val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val targetDir = prefs.getString(PREF_DIRECTORY, DEFAULT_DIRECTORY) ?: DEFAULT_DIRECTORY
+
+        val baseDir = Environment.getExternalStorageDirectory()
+        currentDirectory = File(baseDir, targetDir)
+
+        if (currentDirectory?.exists() == true && currentDirectory?.isDirectory == true) {
+            loadDirectory(currentDirectory!!)
+        } else {
+            currentItems = emptyList()
+            updateUI()
+        }
+    }
+
+    private fun loadDirectory(directory: File) {
         val audioExtensions = setOf("mp3", "wav", "ogg", "m4a", "flac", "aac", "wma", "amr")
 
-        if (dcimDir.exists() && dcimDir.isDirectory) {
-            val files = dcimDir.listFiles { file ->
-                file.isFile && file.extension.lowercase() in audioExtensions
-            }?.map { AudioFile(it.name, it.absolutePath) }
-                ?.sortedBy { it.name.lowercase() }
-                ?: emptyList()
+        val items = mutableListOf<FileItem>()
 
-            audioFiles = files
-        } else {
-            audioFiles = emptyList()
+        // 添加返回上级目录选项
+        if (directory.parentFile != null && directory.absolutePath != Environment.getExternalStorageDirectory().absolutePath) {
+            items.add(FileItem.Folder("..", directory.parentFile!!.absolutePath))
         }
 
-        if (audioFiles.isEmpty()) {
+        // 获取并排序文件夹和文件
+        val files = directory.listFiles() ?: emptyArray()
+        val folders = files.filter { it.isDirectory }.sortedBy { it.name.lowercase() }
+        val audioFiles = files.filter { it.isFile && it.extension.lowercase() in audioExtensions }.sortedBy { it.name.lowercase() }
+
+        // 先添加文件夹
+        folders.forEach { folder ->
+            items.add(FileItem.Folder(folder.name, folder.absolutePath))
+        }
+
+        // 再添加音频文件
+        audioFiles.forEach { file ->
+            items.add(FileItem.Audio(file.name, file.absolutePath))
+        }
+
+        currentItems = items
+        updateUI()
+    }
+
+    private fun updateUI() {
+        if (currentItems.isEmpty()) {
             tvEmpty.visibility = android.view.View.VISIBLE
             recyclerView.visibility = android.view.View.GONE
         } else {
             tvEmpty.visibility = android.view.View.GONE
             recyclerView.visibility = android.view.View.VISIBLE
-            adapter = AudioFileAdapter(audioFiles) { position ->
-                playAudio(position)
-            }
+            adapter = FileAdapter(
+                currentItems,
+                onFolderClick = { folder ->
+                    val dir = File(folder.path)
+                    if (dir.exists() && dir.isDirectory) {
+                        loadDirectory(dir)
+                    }
+                },
+                onAudioClick = { audio ->
+                    playAudio(audio)
+                }
+            )
             recyclerView.adapter = adapter
         }
     }
 
-    private fun playAudio(index: Int) {
-        if (index < 0 || index >= audioFiles.size) return
+    private fun playAudio(audio: FileItem.Audio) {
+        // 收集当前目录下的所有音频文件
+        currentAudioList = currentItems.filterIsInstance<FileItem.Audio>()
+        val index = currentAudioList.indexOfFirst { it.path == audio.path }
+        if (index < 0) return
 
         releasePlayer()
         currentIndex = index
@@ -135,13 +224,13 @@ class MainActivity : AppCompatActivity() {
 
         try {
             mediaPlayer = MediaPlayer().apply {
-                setDataSource(audioFiles[index].path)
+                setDataSource(audio.path)
                 setOnCompletionListener {
                     playNext()
                 }
                 setOnErrorListener { _, _, _ ->
                     runOnUiThread {
-                        Toast.makeText(this@MainActivity, "播放出错: ${audioFiles[index].name}", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this@MainActivity, "播放出错: ${audio.name}", Toast.LENGTH_SHORT).show()
                         playNext()
                     }
                     true
@@ -150,7 +239,7 @@ class MainActivity : AppCompatActivity() {
                 start()
             }
 
-            adapter?.setCurrentPlaying(index)
+            adapter?.setCurrentPlaying(audio.path)
             updateNowPlayingUI()
         } catch (e: Exception) {
             Toast.makeText(this, "无法播放: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -160,8 +249,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun playNext() {
-        if (currentIndex < audioFiles.size - 1) {
-            playAudio(currentIndex + 1)
+        if (currentIndex < currentAudioList.size - 1) {
+            playAudio(currentAudioList[currentIndex + 1])
         } else {
             isPlaying = false
             releasePlayer()
@@ -176,12 +265,12 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun resumeAudio() {
-        if (currentIndex >= 0 && currentIndex < audioFiles.size) {
+        if (currentIndex >= 0 && currentIndex < currentAudioList.size) {
             mediaPlayer?.start()
             isPlaying = true
             updateNowPlayingUI()
-        } else if (audioFiles.isNotEmpty()) {
-            playAudio(0)
+        } else if (currentAudioList.isNotEmpty()) {
+            playAudio(currentAudioList[0])
         }
     }
 
@@ -194,13 +283,25 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun updateNowPlayingUI() {
-        if (currentIndex >= 0 && currentIndex < audioFiles.size) {
+        if (currentIndex >= 0 && currentIndex < currentAudioList.size) {
             nowPlayingBar.visibility = android.view.View.VISIBLE
-            tvNowPlaying.text = "${getString(R.string.now_playing)}: ${audioFiles[currentIndex].name}"
+            tvNowPlaying.text = "${getString(R.string.now_playing)}: ${currentAudioList[currentIndex].name}"
             btnPlayPause.text = if (isPlaying) getString(R.string.pause) else getString(R.string.play)
         } else {
             nowPlayingBar.visibility = android.view.View.GONE
         }
+    }
+
+    override fun onBackPressed() {
+        // 如果当前不在根目录，返回上级目录
+        val baseDir = Environment.getExternalStorageDirectory()
+        if (currentDirectory != null && currentDirectory?.absolutePath != baseDir.absolutePath) {
+            currentDirectory?.parentFile?.let { parent ->
+                loadDirectory(parent)
+                return
+            }
+        }
+        super.onBackPressed()
     }
 
     override fun onDestroy() {

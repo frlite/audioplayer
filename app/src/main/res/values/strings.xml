@@ -9,4 +9,6 @@
     <string name="grant_permission">授予权限</string>
     <string name="now_playing">正在播放</string>
     <string name="auto_play_next">自动播放下一首</string>
+    <string name="set_directory">设置目录</string>
+    <string name="directory_hint">输入目录名，如：DCIM</string>
 </resources>
